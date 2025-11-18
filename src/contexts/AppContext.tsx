@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useState, useEffect } from 'react';
+import React, { createContext, useContext, useState, useEffect, useCallback } from 'react';
 import { Filiere, Creneau, Reservation, CreneauAffichage, User, JourSemaine } from '../types';
 import { filieres as mockFilieres, creneaux as mockCreneaux, users as mockUsers } from '../data/mock-data';
 import { useToast } from "@/hooks/use-toast";
@@ -133,13 +133,14 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   };
 
   // Fonction utilitaire pour rafraîchir après un délai
-  const delayedRefresh = async () => {
+  // Utilisation de useCallback pour éviter les problèmes de closure dans les souscriptions
+  const delayedRefresh = useCallback(async () => {
     // Attendre 500ms pour laisser le temps à la base de données de finir la transaction
     console.log("Début du délai avant rafraîchissement...");
     await new Promise(resolve => setTimeout(resolve, 500));
     console.log("Délai terminé, rafraîchissement des données...");
     await refreshData();
-  };
+  }, []); // Pas de dépendances, refreshData sera toujours la fonction la plus récente
 
   // Effet pour récupérer l'utilisateur actuel au chargement
   useEffect(() => {
@@ -266,62 +267,113 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   // AJOUT: Souscriptions en temps réel Supabase pour les mises à jour de données
   useEffect(() => {
     if (!supabaseConnected) return;
-    
+
     console.log('Mise en place des souscriptions Supabase en temps réel...');
-    
+
+    // État pour suivre les erreurs de souscription
+    let subscriptionErrors = 0;
+    const MAX_SUBSCRIPTION_ERRORS = 3;
+
+    // Gestionnaire d'erreur commun pour les souscriptions
+    const handleSubscriptionError = (tableName: string, error: any) => {
+      console.error(`Erreur de souscription pour ${tableName}:`, error);
+      subscriptionErrors++;
+
+      if (subscriptionErrors >= MAX_SUBSCRIPTION_ERRORS) {
+        toast({
+          title: "Problème de synchronisation",
+          description: "Les mises à jour en temps réel ont rencontré des erreurs. Rafraîchissez la page si les données semblent obsolètes.",
+          variant: "destructive",
+        });
+      }
+    };
+
+    // Gestionnaire de changement commun avec try-catch
+    const handleDataChange = async (tableName: string, payload: any) => {
+      try {
+        console.log(`Changement détecté dans ${tableName}:`, payload);
+        await delayedRefresh();
+      } catch (error) {
+        handleSubscriptionError(tableName, error);
+      }
+    };
+
     // Souscription aux changements de réservations
     const reservationsSubscription = supabase
       .channel('reservations-changes')
-      .on('postgres_changes', 
-        { event: '*', schema: 'public', table: 'reservations' }, 
-        async (payload) => {
-          console.log('Changement détecté dans les réservations:', payload);
-          delayedRefresh();
-      })
-      .subscribe();
-    
+      .on('postgres_changes',
+        { event: '*', schema: 'public', table: 'reservations' },
+        (payload) => handleDataChange('reservations', payload)
+      )
+      .subscribe((status, error) => {
+        if (status === 'SUBSCRIBED') {
+          console.log('Souscription réservations: ACTIVE');
+        } else if (status === 'CHANNEL_ERROR') {
+          handleSubscriptionError('reservations', error);
+        } else if (status === 'TIMED_OUT') {
+          console.warn('Souscription réservations: TIMEOUT');
+          handleSubscriptionError('reservations', new Error('Timeout'));
+        }
+      });
+
     // Souscription aux changements d'utilisateurs
     const usersSubscription = supabase
       .channel('users-changes')
-      .on('postgres_changes', 
-        { event: '*', schema: 'public', table: 'users' }, 
-        async (payload) => {
-          console.log('Changement détecté dans les utilisateurs:', payload);
-          delayedRefresh();
-      })
-      .subscribe();
-    
+      .on('postgres_changes',
+        { event: '*', schema: 'public', table: 'users' },
+        (payload) => handleDataChange('users', payload)
+      )
+      .subscribe((status, error) => {
+        if (status === 'SUBSCRIBED') {
+          console.log('Souscription utilisateurs: ACTIVE');
+        } else if (status === 'CHANNEL_ERROR') {
+          handleSubscriptionError('users', error);
+        }
+      });
+
     // Souscription aux changements de filières
     const filieresSubscription = supabase
       .channel('filieres-changes')
-      .on('postgres_changes', 
-        { event: '*', schema: 'public', table: 'filieres' }, 
-        async (payload) => {
-          console.log('Changement détecté dans les filières:', payload);
-          delayedRefresh();
-      })
-      .subscribe();
-    
+      .on('postgres_changes',
+        { event: '*', schema: 'public', table: 'filieres' },
+        (payload) => handleDataChange('filieres', payload)
+      )
+      .subscribe((status, error) => {
+        if (status === 'SUBSCRIBED') {
+          console.log('Souscription filières: ACTIVE');
+        } else if (status === 'CHANNEL_ERROR') {
+          handleSubscriptionError('filieres', error);
+        }
+      });
+
     // Souscription aux changements de créneaux
     const creneauxSubscription = supabase
       .channel('creneaux-changes')
-      .on('postgres_changes', 
-        { event: '*', schema: 'public', table: 'creneaux' }, 
-        async (payload) => {
-          console.log('Changement détecté dans les créneaux:', payload);
-          delayedRefresh();
-      })
-      .subscribe();
-    
+      .on('postgres_changes',
+        { event: '*', schema: 'public', table: 'creneaux' },
+        (payload) => handleDataChange('creneaux', payload)
+      )
+      .subscribe((status, error) => {
+        if (status === 'SUBSCRIBED') {
+          console.log('Souscription créneaux: ACTIVE');
+        } else if (status === 'CHANNEL_ERROR') {
+          handleSubscriptionError('creneaux', error);
+        }
+      });
+
     // Nettoyage des souscriptions quand le composant est démonté
     return () => {
       console.log('Nettoyage des souscriptions Supabase...');
-      reservationsSubscription.unsubscribe();
-      usersSubscription.unsubscribe();
-      filieresSubscription.unsubscribe();
-      creneauxSubscription.unsubscribe();
+      try {
+        reservationsSubscription.unsubscribe();
+        usersSubscription.unsubscribe();
+        filieresSubscription.unsubscribe();
+        creneauxSubscription.unsubscribe();
+      } catch (error) {
+        console.error('Erreur lors du nettoyage des souscriptions:', error);
+      }
     };
-  }, [supabaseConnected]);
+  }, [supabaseConnected, delayedRefresh, toast]);
   
   // Génération des créneaux d'affichage avec leur statut
   useEffect(() => {
@@ -413,56 +465,86 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const addReservation = async (reservation: Omit<Reservation, 'id'>) => {
     try {
       console.log('Attempting to add reservation:', reservation);
-      
+
       // Check if we're connected to Supabase
       if (!supabaseConnected) {
         console.error('Cannot add reservation: Supabase not connected');
         throw new Error('Database connection not available');
       }
-      
+
       // Validate the reservation data
-      if (!reservation.creneau_id || !reservation.utilisateur_id || !reservation.filiere_id || 
+      if (!reservation.creneau_id || !reservation.utilisateur_id || !reservation.filiere_id ||
           !reservation.date || !reservation.titre_module || !reservation.description) {
         console.error('Invalid reservation data:', reservation);
         throw new Error('Invalid reservation data');
       }
-      
+
       // Insert the reservation
       const { data, error } = await supabase
         .from('reservations')
         .insert([reservation])
         .select();
-      
+
       if (error) {
         console.error('Supabase error inserting reservation:', error);
+
+        // Handle specific error types
+        if (error.code === '23505') {
+          // PostgreSQL unique constraint violation
+          toast({
+            title: "Créneau déjà réservé",
+            description: "Ce créneau a déjà été réservé par quelqu'un d'autre. Veuillez en choisir un autre.",
+            variant: "destructive",
+          });
+        } else if (error.code === '23514') {
+          // PostgreSQL check constraint violation
+          toast({
+            title: "Réservation invalide",
+            description: "Impossible de réserver un créneau dans le passé.",
+            variant: "destructive",
+          });
+        } else {
+          toast({
+            title: "Erreur",
+            description: error.message || "Impossible de créer la réservation dans la base de données",
+            variant: "destructive",
+          });
+        }
+
+        // Force un rafraîchissement pour s'assurer d'un état cohérent
+        await delayedRefresh();
         throw error;
       }
-      
+
       console.log('Reservation created successfully:', data);
-      
+
       // Force un état optimiste immédiat en ajoutant temporairement au state local
       if (data && data[0]) {
         setReservations(prev => [...prev, data[0]]);
       }
-      
+
       // Puis déclenche un rafraîchissement complet avec délai
       await delayedRefresh();
-      
+
       toast({
         title: "Réservation créée",
         description: "Votre réservation a été créée avec succès",
       });
-    } catch (error) {
+    } catch (error: any) {
       console.error('Erreur lors de la création de la réservation:', error);
-      toast({
-        title: "Erreur",
-        description: "Impossible de créer la réservation dans la base de données",
-        variant: "destructive",
-      });
-      
+
+      // Si le toast n'a pas déjà été affiché (erreurs non-DB)
+      if (!error.code) {
+        toast({
+          title: "Erreur",
+          description: "Une erreur inattendue s'est produite",
+          variant: "destructive",
+        });
+      }
+
       // Force un rafraîchissement en cas d'erreur pour s'assurer d'un état cohérent
       await delayedRefresh();
-      
+
       throw error; // Re-throw to allow handling in the component
     }
   };

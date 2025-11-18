@@ -46,14 +46,32 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           };
 
           // Tentative d'insertion avec gestion d'erreur améliorée
-          const { error: insertError } = await supabase
+          // Essayer d'abord avec le nouveau schéma (prenom/nom), puis avec l'ancien si échec
+          let insertError;
+          const newSchemaResult = await supabase
             .from('users')
             .insert({
               id: userId,
-              first_name: 'Utilisateur',
-              last_name: 'Temporaire',
+              prenom: 'Utilisateur',
+              nom: 'Temporaire',
               role: 'enseignant'
             });
+
+          insertError = newSchemaResult.error;
+
+          // Si échec avec le nouveau schéma, essayer l'ancien
+          if (insertError && insertError.message?.includes('column')) {
+            console.log('Trying old schema (first_name/last_name)...');
+            const oldSchemaResult = await supabase
+              .from('users')
+              .insert({
+                id: userId,
+                first_name: 'Utilisateur',
+                last_name: 'Temporaire',
+                role: 'enseignant'
+              });
+            insertError = oldSchemaResult.error;
+          }
 
           if (insertError) {
             console.error('Error creating profile:', insertError);
@@ -77,10 +95,11 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
       if (profile) {
         console.log('Profile found:', profile);
+        // Support both old (first_name/last_name) and new (prenom/nom) schema during migration
         const user: User = {
           id: profile.id,
-          prenom: profile.first_name || '',
-          nom: profile.last_name || '',
+          prenom: profile.prenom || profile.first_name || '',
+          nom: profile.nom || profile.last_name || '',
           email: session?.user?.email || '',
           role: profile.role as Role || 'enseignant',
         };
@@ -113,60 +132,77 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     console.log('Setting up auth state listener');
     setIsLoading(true);
 
-    const setupAuth = async () => {
+    // Flag pour éviter les mises à jour d'état après le démontage
+    let isMounted = true;
+    let subscription: { unsubscribe: () => void } | null = null;
+
+    const initializeAuth = async () => {
       try {
-        // Vérifier s'il y a une session existante (Supabase gère la persistance de manière sécurisée)
+        // Étape 1: Configurer d'abord l'écouteur pour capturer tous les événements
+        const { data: { subscription: authSubscription } } = supabase.auth.onAuthStateChange(
+          async (event, newSession) => {
+            if (!isMounted) return;
+
+            console.log('Auth state changed:', event, newSession?.user?.email);
+
+            if (event === 'SIGNED_IN' || event === 'TOKEN_REFRESHED') {
+              setSession(newSession);
+
+              if (newSession?.user) {
+                await fetchUserProfile(newSession.user.id);
+              }
+            } else if (event === 'SIGNED_OUT') {
+              setSession(null);
+              setCurrentUser(null);
+              setIsLoading(false);
+            } else if (event === 'INITIAL_SESSION') {
+              // Gérer la session initiale via l'écouteur
+              if (newSession) {
+                setSession(newSession);
+                await fetchUserProfile(newSession.user.id);
+              } else {
+                setCurrentUser(null);
+                setIsLoading(false);
+              }
+            }
+          }
+        );
+
+        subscription = authSubscription;
+
+        // Étape 2: Vérifier la session existante (après avoir configuré l'écouteur)
         const { data: { session: existingSession } } = await supabase.auth.getSession();
+
+        if (!isMounted) return;
 
         if (existingSession) {
           console.log('Session retrieved from Supabase:', existingSession.user.email);
-          setSession(existingSession);
-
-          // Attendre que le profil soit chargé
-          await fetchUserProfile(existingSession.user.id);
+          // Ne pas dupliquer le traitement si INITIAL_SESSION l'a déjà fait
+          // On laisse l'écouteur gérer la session via l'événement INITIAL_SESSION
         } else {
           console.log('No existing session found');
           setCurrentUser(null);
           setIsLoading(false);
         }
       } catch (error) {
-        console.error('Error checking existing session:', error);
+        if (!isMounted) return;
+
+        console.error('Error initializing auth:', error);
         setIsLoading(false);
+        toast({
+          title: "Erreur d'authentification",
+          description: "Impossible d'initialiser l'authentification",
+          variant: "destructive",
+        });
       }
     };
 
-    // Configurer l'écouteur d'état d'authentification
-    const setupAuthListener = () => {
-      const { data: { subscription } } = supabase.auth.onAuthStateChange(
-        async (event, newSession) => {
-          console.log('Auth state changed:', event, newSession?.user?.email);
-
-          if (event === 'SIGNED_IN' || event === 'TOKEN_REFRESHED') {
-            setSession(newSession);
-
-            if (newSession?.user) {
-              await fetchUserProfile(newSession.user.id);
-            }
-          } else if (event === 'SIGNED_OUT') {
-            setSession(null);
-            setCurrentUser(null);
-            setIsLoading(false);
-          }
-        }
-      );
-
-      return subscription;
-    };
-
-    // Exécuter la configuration de l'auth de manière asynchrone
-    let subscription: { unsubscribe: () => void } | null = null;
-
-    setupAuth().then(() => {
-      subscription = setupAuthListener();
-    });
+    // Démarrer l'initialisation
+    initializeAuth();
 
     // Nettoyage
     return () => {
+      isMounted = false;
       if (subscription) {
         subscription.unsubscribe();
       }

@@ -86,8 +86,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         };
         setCurrentUser(user);
 
-        // Stocker l'utilisateur dans localStorage pour persistance
-        localStorage.setItem('currentUser', JSON.stringify(user));
+        // Note: Ne pas stocker les données utilisateur dans localStorage pour des raisons de sécurité
+        // Supabase gère déjà la persistance de session de manière sécurisée
 
         setIsLoading(false);
         return user;
@@ -115,30 +115,17 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
     const setupAuth = async () => {
       try {
-        // Vérifier d'abord s'il y a un utilisateur stocké localement
-        const storedUser = localStorage.getItem('currentUser');
-        if (storedUser) {
-          try {
-            const parsedUser = JSON.parse(storedUser);
-            setCurrentUser(parsedUser);
-          } catch (e) {
-            console.error('Error parsing stored user:', e);
-            localStorage.removeItem('currentUser');
-          }
-        }
-
-        // Vérifier s'il y a une session existante
+        // Vérifier s'il y a une session existante (Supabase gère la persistance de manière sécurisée)
         const { data: { session: existingSession } } = await supabase.auth.getSession();
 
         if (existingSession) {
-          console.log('Session retrieved from localStorage:', existingSession.user.email);
+          console.log('Session retrieved from Supabase:', existingSession.user.email);
           setSession(existingSession);
 
           // Attendre que le profil soit chargé
           await fetchUserProfile(existingSession.user.id);
         } else {
           console.log('No existing session found');
-          localStorage.removeItem('currentUser');
           setCurrentUser(null);
           setIsLoading(false);
         }
@@ -163,7 +150,6 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           } else if (event === 'SIGNED_OUT') {
             setSession(null);
             setCurrentUser(null);
-            localStorage.removeItem('currentUser');
             setIsLoading(false);
           }
         }
@@ -274,7 +260,6 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       await supabase.auth.signOut();
       setCurrentUser(null);
       setSession(null);
-      localStorage.removeItem('currentUser');
 
       toast({
         title: "Déconnexion",

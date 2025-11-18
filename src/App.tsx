@@ -3,6 +3,7 @@ import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-d
 import { AppProvider } from './contexts/AppContext';
 import { AuthProvider } from './contexts/AuthContext';
 import { Toaster } from "@/components/ui/sonner";
+import { AdminRoute } from './components/ProtectedRoute';
 import AppLayout from './components/AppLayout';
 import Login from './pages/Login';
 import Index from './pages/Index';
@@ -17,6 +18,9 @@ import DebugReservation from './pages/DebugReservation';
 import DebugReservationForm from './pages/DebugReservationForm';
 import './App.css';
 
+// Vérifier si on est en mode développement
+const isDevelopment = import.meta.env.MODE === 'development';
+
 function App() {
   return (
     <Router>
@@ -30,11 +34,34 @@ function App() {
               <Route path="calendrier" element={<Calendrier />} />
               <Route path="reservations" element={<Reservations />} />
               <Route path="profil" element={<Profil />} />
-              <Route path="utilisateurs" element={<Utilisateurs />} />
-              <Route path="supervision" element={<Supervision />} />
-              <Route path="debug-supabase" element={<DebugSupabase />} />
-              <Route path="debug-reservation" element={<DebugReservation />} />
-              <Route path="debug-reservation-form" element={<DebugReservationForm />} />
+
+              {/* Routes protégées - Réservées aux administrateurs */}
+              <Route
+                path="utilisateurs"
+                element={
+                  <AdminRoute>
+                    <Utilisateurs />
+                  </AdminRoute>
+                }
+              />
+              <Route
+                path="supervision"
+                element={
+                  <AdminRoute>
+                    <Supervision />
+                  </AdminRoute>
+                }
+              />
+
+              {/* Routes de debug - Uniquement en développement */}
+              {isDevelopment && (
+                <>
+                  <Route path="debug-supabase" element={<DebugSupabase />} />
+                  <Route path="debug-reservation" element={<DebugReservation />} />
+                  <Route path="debug-reservation-form" element={<DebugReservationForm />} />
+                </>
+              )}
+
               <Route path="*" element={<NotFound />} />
             </Route>
             

@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useState, useEffect, useCallback } from 'react';
+import React, { createContext, useContext, useState, useEffect, useCallback, useRef } from 'react';
 import { Filiere, Creneau, Reservation, CreneauAffichage, User, JourSemaine } from '../types';
 import { filieres as mockFilieres, creneaux as mockCreneaux, users as mockUsers } from '../data/mock-data';
 import { useToast } from "@/hooks/use-toast";
@@ -44,7 +44,11 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const [isLoading, setIsLoading] = useState<boolean>(true);
   const [supabaseConnected, setSupabaseConnected] = useState<boolean>(false);
   const [currentUser, setCurrentUser] = useState<User | null>(null);
-  
+
+  // Refs pour le debouncing avancé
+  const refreshTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const pendingRefreshCountRef = useRef<number>(0);
+
   const { toast } = useToast();
 
   // Fonction pour rafraîchir les données avec des options plus robustes
@@ -132,14 +136,35 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     }
   };
 
-  // Fonction utilitaire pour rafraîchir après un délai
+  // Fonction utilitaire pour rafraîchir après un délai avec debouncing avancé
   // Utilisation de useCallback pour éviter les problèmes de closure dans les souscriptions
-  const delayedRefresh = useCallback(async () => {
-    // Attendre 500ms pour laisser le temps à la base de données de finir la transaction
-    console.log("Début du délai avant rafraîchissement...");
-    await new Promise(resolve => setTimeout(resolve, 500));
-    console.log("Délai terminé, rafraîchissement des données...");
-    await refreshData();
+  const delayedRefresh = useCallback(() => {
+    // Incrémenter le compteur de refreshes en attente
+    pendingRefreshCountRef.current += 1;
+
+    // Si un refresh est déjà planifié, l'annuler
+    if (refreshTimeoutRef.current) {
+      clearTimeout(refreshTimeoutRef.current);
+      console.log(`Refresh annulé (${pendingRefreshCountRef.current} changements groupés)`);
+    }
+
+    // Planifier un nouveau refresh après 500ms
+    refreshTimeoutRef.current = setTimeout(async () => {
+      const changeCount = pendingRefreshCountRef.current;
+      console.log(`Début du rafraîchissement (${changeCount} changement${changeCount > 1 ? 's' : ''} groupé${changeCount > 1 ? 's' : ''})...`);
+
+      // Réinitialiser le compteur
+      pendingRefreshCountRef.current = 0;
+      refreshTimeoutRef.current = null;
+
+      // Effectuer le refresh
+      try {
+        await refreshData();
+        console.log("Rafraîchissement terminé avec succès");
+      } catch (error) {
+        console.error("Erreur lors du rafraîchissement:", error);
+      }
+    }, 500);
   }, []); // Pas de dépendances, refreshData sera toujours la fonction la plus récente
 
   // Effet pour récupérer l'utilisateur actuel au chargement
@@ -364,6 +389,14 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     // Nettoyage des souscriptions quand le composant est démonté
     return () => {
       console.log('Nettoyage des souscriptions Supabase...');
+
+      // Annuler le refresh en attente s'il existe
+      if (refreshTimeoutRef.current) {
+        clearTimeout(refreshTimeoutRef.current);
+        refreshTimeoutRef.current = null;
+        console.log('Timeout de refresh annulé lors du cleanup');
+      }
+
       try {
         reservationsSubscription.unsubscribe();
         usersSubscription.unsubscribe();
